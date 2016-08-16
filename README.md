@@ -3,7 +3,7 @@ SpaceFish: A Userspace File System
 
 SpaceFish is an experimental userspace file system in shared memory,
 implemented from scratch, designed to run on Linux.
-It uses the LD_PRELOAD mechanism to intercept system call wrappers
+It uses the `LD_PRELOAD` mechanism to intercept system call wrappers
 and other filesystem-related libc functions, in order
 to sandbox all file operations, in a scalable manner, in
 shared memory, and at the user level.
@@ -26,42 +26,46 @@ File data is allocated through "buckets."
 Buckets can be re-used, and there are several algorithms for how free
 data buckets are allocated.
 Exactly one bucket allocation algorithm must
-be selected through CPPFLAGS in the Makefile.
+be selected through `CPPFLAGS` in the `Makefile`.
 
 This can be:
-* ALLOC_STEPS: Shared memory for file data is allocated from
-  the OS as 1 GB steps, as needed by UFS. A UFS-wide "rough index"
+* `ALLOC_STEPS`: Shared memory for file data is allocated from
+  the OS as 1 GB steps, as needed by SpaceFish. A SpaceFish-wide "rough index"
   keeps track of approximately where the last bucket was allocated,
   and any process that needs a new buckets starts at the point
   and walks forward until it finds one. When it does, the process
   sets the rough index to the index where it founds its free bucket.
-* ALLOC_ALL_RANDOM: "Random-and-walk" algorithm.
+* `ALLOC_ALL_RANDOM`: "Random-and-walk" algorithm.
   All "steps" are allocated at once. That is,
   shared memory does not grow as needed by UFS. A process that needs
   a free bucket starts at a random position in the logical array
   of all data buckets, and walks forward until it finds a free one.
-* ALLOC_ALL_ROUGH_INDEX: All steps are allocated at once.
-  Then, the "rough index" mechanism described in "ALLOC_STEPS" is used
+* `ALLOC_ALL_ROUGH_INDEX`: All steps are allocated at once.
+  Then, the "rough index" mechanism described in `ALLOC_STEPS` is used
   to obtain free buckets.
-* ALLOC_ALL_PER_CORE_RANDOM: All steps are allocated at once.
+* `ALLOC_ALL_PER_CORE_RANDOM`: All steps are allocated at once.
   Before looking for a free bucket, a process checks its CPU
   number and from that determines a slice of the logical array of
   all buckets from which to allocate. In this "slice", the random-and-walk
-  algorithm described in ALLOC_ALL_RANDOM is used to obtain a free
+  algorithm described in `ALLOC_ALL_RANDOM` is used to obtain a free
   data bucket.
-* ALLOC_ALL_PER_CORE_ROUGH_INDEX: Each core only has a slice, as in above case;
+* `ALLOC_ALL_PER_CORE_ROUGH_INDEX`: Each core only has a slice, as in above case;
   however, inside its slice, the core uses the "rough index" method
   as a starting point to looking for a free bucket.
 
 Building
 --------
 
-select one bucket allocation algorithm listed above in the Makefile
-make
+1) select one bucket allocation algorithm listed above in the Makefile
+2) 
+    make
 
 
 Running
 -------
-run: ./bin/daemon first
-To run an application over spacefish,
-use LD_PRELOAD=bin/libufs.so /path/to/application.
+
+1) run:
+        ./bin/daemon first
+
+2) To run an application over spacefish,
+set the LD_PRELOAD environment variable to ./bin/libufs.so.
