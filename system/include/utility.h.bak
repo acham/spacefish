@@ -1,0 +1,51 @@
+#include <config.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#include <hashtable.h>
+
+/* used by stamp() */
+#define ST_ACS 1
+#define ST_MOD 2
+#define ST_CHG 4
+
+extern pid_info *pid_meta;
+
+// extern int pid_meta_idx;
+
+extern int hanging_pids_init;
+
+extern int this_first_parent_signaled;
+
+typedef struct _metainfo {
+    struct stat s;
+} metainfo;
+
+bucket *file_find(void *mem, const char *name);
+
+void upload_dir(void *mem, const char *name);
+
+bucket *upload_file(void *mem, const char *name);
+
+bucket *traverse_next_bucket(void *mem, bucket *b);
+
+void write_to_disk(void *mem, bucket *b);
+
+void flush_write(void *mem);
+
+int build_abs_path(char **abs_path_t, const char *path_in);
+
+int stamp(metainfo *mi, int type);
+
+/** macro starts here **/
+/** @temperal **/
+/** @modify **/
+#include <fd.h>
+
+#define BUCKET_TO_META(b) ((metainfo *)get_meta_bucket(UFSmem, b))
+#define FD_TO_META(fd) BUCKET_TO_META(FD_TO_BUCKET(fd))
+#define FD_TO_META_SIZE(fd) (FD_TO_META(fd)->s.st_size)
+
+#define MARK_FD_INCONSISENT(fd) MARK_BUCKET_INCONSISENT(FD_TO_BUCKET(fd))
+#define FD_RAW_WRITE(fd, buf, count)                                           \
+    raw_write_data_bucket(UFSmem, FD_TO_BUCKET(fd), FD_TO_RWPTR(fd), buf, count)

@@ -1,0 +1,27 @@
+#define HASH_TABLE_SIZE 16384
+#define META_BUCKETS (1ULL << 16)
+/* 1 step ~= 1 GB */
+#define DATA_BUCKETS_STEP 262144
+/* ~64 GB max for data buckets */
+#define TOTAL_STEPS_ALLOWED 32
+#define MAX_DATA_BUCKETS_STEPS 128
+#define DEFAULT_FILE_SIZE 4096
+
+#include <limits.h>
+#define DBUCKET_BUF_SIZE 4096
+#define MAX_PATH_SIZE PATH_MAX
+#define SHARED_MEM_NAME "ufs_xu"
+#define MAX_EXEC_HANGING 4096 * 2
+#define FD_MEM_SIZE 1024 * 1024
+#define MAX_NUM_FD 4096
+#define FIRST_USER_FD 1024
+#define STDIO_WRITE_BUFFER 1024
+#define STDIO_READ_BUFFER 1
+#define DEFAULT_BLKSIZE 4096
+
+/* ufs options */
+#define UNLINK_IGNORE_DISK 1
+#define DEFER_TIMESTAMP_CLOSE 1
+//#define O_TRUNC_FREE 1
+#define OFFSET_PROCESS_CACHE 1
+#define OFFSET_PROCESS_CACHE_SIZE 1

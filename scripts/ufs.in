@@ -1,0 +1,60 @@
+#!/bin/bash
+#do not run from ufs/scripts folder!
+stderr ()
+{
+  local i
+  for i
+  do
+      echo >&2 "ufs: $i"
+  done
+}
+
+fatal ()
+{
+  stderr "$@"
+  exit 1
+}
+
+
+
+PREFIX=$(dirname `pwd -P`)
+LIB=libufs.so
+DAEMON=${PREFIX}/bin/daemon
+
+PID=""
+PATHS="$LD_LIBRARY_PATH"
+
+libfound=no
+
+ABSLIB=""
+if [ -n "$PREFIX" ]
+then
+    if test -r "${PREFIX}/bin/${LIB}"
+    then
+        libfound=yes
+        ABSLIB="$PREFIX/bin/$LIB"
+    fi
+fi
+
+echo "lib found: ${libfound}"
+echo "lib path: ${ABSLIB}"
+
+if test $libfound = no
+then
+    fatal "preload library \`$LIB' not found, aborting."
+fi
+
+PID=`eval $DAEMON`
+echo "PID : $PID"
+trap "kill -s TERM $PID" EXIT INT
+
+#sleep 5m
+
+if test -z "$PID"; then
+    fatal "error while starting the ufs daemon"
+fi
+
+env PS1="[ufs]# " $LD_LIBRARY_PATH="$PATHS" LD_PRELOAD="$ABSLIB" /bin/sh --norc -i
+RESULT=$?
+
+exit $RESULT

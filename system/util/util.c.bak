@@ -1,0 +1,414 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include <dirent.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <limits.h>
+#include <sys/time.h>
+#include <time.h>
+
+/* shmFS */
+#include <djb2.h>
+#include <utility.h>
+#include <glibccall.h>
+#include <dlog.h>
+
+#define GET_BUCKET(mem, key) get_bucket(mem, key, true)
+#define GET_NEXT_BUCKET(mem, b) get_next_bucket(mem, b, true)
+
+bucket *file_find(void *mem, const char *iname)
+{
+    dlog(1, "[ufs: file_find] input file name: %s\n", iname);
+    bucket *b;
+    const char *name;
+
+    BUILD_ABS_PATH_1(name, iname);
+
+    //    dlog(1, "[ufs: file_find] called build_abs_path for input %s, got
+    //    %s\n",
+    //         iname, name);
+    int key = hash_string(name);
+    for (b = GET_BUCKET(mem, key); b; b = GET_NEXT_BUCKET(mem, b)) {
+        if (strcmp(name, b->path) == 0) {
+            dlog(10, "[ufs: file_find] found: %s\n", name);
+            FREE_ABS_PATH_1(name, iname);
+            return b;
+        }
+    }
+    dlog(10, "[ufs: file_find] not found: %s\n", name);
+    FREE_ABS_PATH_1(name, iname);
+    return NULL;
+}
+
+bucket *upload_file(void *mem, const char *name)
+{
+    dlog(1, "[ufs: upload_file] started, file %s\n", name);
+    int fd;
+    char *string;
+    ssize_t c;
+    size_t size_ind;
+    metainfo nm;
+    bucket *b;
+
+    if (file_find(mem, name) != NULL)
+        return NULL;
+
+    if (real_stat(name, &nm.s))
+        return NULL;
+
+    fd = real_open(name, O_RDONLY);
+    if (fd == -1)
+        return NULL;
+
+    string = malloc(nm.s.st_size + 1);
+    c = real_read(fd, string, nm.s.st_size);
+
+    if (c != nm.s.st_size)
+        return NULL;
+    dlog(0, "[ufs: upload_file] file: %s all good!\n", name);
+    b = init_bucket(mem, name);
+
+    set_meta_bucket(mem, b, &nm, sizeof(nm));
+
+    init_data_bucket(mem, b, nm.s.st_size);
+    raw_write_data_bucket(mem, b, 0, &size_ind, string, nm.s.st_size);
+
+    free(string);
+    real_close(fd);
+
+    return b;
+}
+
+void upload_dir(void *mem, const char *name)
+{
+    DIR *dir;
+    struct dirent *entry;
+
+    if (!(dir = opendir(name)))
+        return;
+    if (!(entry = readdir(dir)))
+        return;
+    do {
+        char path[PATH_MAX];
+        int len = snprintf(path, PATH_MAX - 1, "%s/%s", name, entry->d_name);
+        path[len] = 0;
+        if (entry->d_type == DT_DIR) {
+            if (strcmp(entry->d_name, ".") == 0 ||
+                strcmp(entry->d_name, "..") == 0)
+                continue;
+            upload_dir(mem, path);
+        }
+        else {
+            upload_file(mem, path);
+        }
+    } while ((entry = readdir(dir)));
+    closedir(dir);
+}
+
+bucket *traverse_next_bucket(void *mem, bucket *b)
+{
+    int table_pos;
+
+    if (b != NULL && GET_NEXT_BUCKET(mem, b) != NULL)
+        return GET_NEXT_BUCKET(mem, b);
+
+    if (b == NULL) {
+        table_pos = 0;
+    }
+    else {
+        table_pos = hash_string(b->path) + 1;
+    }
+
+    while (table_pos < HASH_TABLE_SIZE && GET_BUCKET(mem, table_pos) == NULL) {
+        table_pos += 1;
+    }
+
+    if (table_pos < HASH_TABLE_SIZE) {
+        return GET_BUCKET(mem, table_pos);
+    }
+    else {
+        return NULL;
+    }
+}
+
+void write_to_disk(void *mem, bucket *b)
+{
+#ifdef WRITE_TO_DISK
+    ssize_t c;
+    metainfo *mi;
+    void *buf;
+
+    mi = (metainfo *)get_meta_bucket(mem, b);
+    buf = malloc(mi->s.st_size);
+
+    c = raw_read_data_bucket(mem, b, 0, buf, mi->s.st_size);
+    dlog(0, "[ufs: write_to_disk] writing %s\n", b->path);
+
+    /** get the mode **/
+    // mode = b->fdd.mode ? b->fdd.mode : 0666;
+    dlog(1, "[ufs: write_to_disk] mode: %o\n", mi->s.st_mode);
+
+    int fd = real_open(b->path, O_RDWR | O_CREAT | O_TRUNC, mi->s.st_mode);
+    real_write(fd, buf, c);
+    real_close(fd);
+    free(buf);
+#else
+    dlog(0, "[ufs: write_to_disk] would write %s\n", b->path);
+#endif
+}
+
+/* go through hash table, writing inconsistent files to disk */
+void flush_write(void *mem)
+{
+    dlog(2, "[flush_write]...\n");
+    /* not handle delete now!!!!*/
+    bucket *b = NULL;
+
+    b = traverse_next_bucket(mem, b);
+    if (b == NULL) {
+        return;
+    }
+    do {
+        if (b->inconsisent == true) {
+            write_to_disk(mem, b);
+        }
+    } while ((b = traverse_next_bucket(mem, b)));
+}
+
+/** build absolute path -- add more complexity later
+ ** for now only handles "./file" "file" "../file"
+ ** path built and stored in (*abs_path) : return 0.
+ ** If input is already absolute: don't copy anything,
+ ** just return 1.
+ ** -1 return: error.
+ ** Does not support /../ or /./ in middle of string.
+ */
+int build_abs_path(char **abs_path_p, const char *path_in)
+{
+    dlog(1, "[ufs: build_abs_path] input path %s\n", path_in);
+    int len = strlen(path_in);
+    if (len > PATH_MAX) {
+        dlog(1, "[ufs] build_abs_path: input path too long\n");
+        return -1;
+    }
+    /* input path already absolute just let caller know */
+    if (path_in[0] == '/' && path_in[1] != '.') {
+        return 1;
+    }
+    /* only malloc if building path */
+    *abs_path_p = malloc(PATH_MAX * sizeof(char));
+    /* input is exactly ".." */
+    if (len > 1 && path_in[0] == '.' && path_in[1] == '.' && path_in[2] == 0) {
+        dlog(1, "[ufs: build_abs_path] '..' should be here\n");
+        char tmp[PATH_MAX];
+        EHANDLE("getcwd", getcwd(tmp, PATH_MAX), NULL);
+        char *last_slash = strrchr(tmp, '/');
+        *last_slash = 0;
+        sprintf(*abs_path_p, "%s", tmp);
+        return 0;
+    }
+    /* input starts with "../" */
+    if (len > 1 && path_in[0] == '.' && path_in[1] == '.') {
+        if (path_in[2] != '/') {
+            dlog(1, "[ufs: build_abs_path] path_in[2] is %d\n", path_in[2]);
+            dlog(1, "[ufs: build_abs_path] wrong format for input path: %s\n",
+                 path_in);
+            return -1;
+        }
+        char tmp[PATH_MAX];
+        char *tp = &tmp[0];
+        strcpy(tmp, path_in);
+        tp++;
+        tp++;
+        tp++;
+        EHANDLE("getcwd", getcwd(*abs_path_p, PATH_MAX), NULL);
+        char *last_slash = strrchr(*abs_path_p, '/');
+        last_slash++;
+        *last_slash = 0;
+        strcat(*abs_path_p, tp);
+        dlog(1, "[ufs: build_abs_path] created abs path %s\n", *abs_path_p);
+        return 0;
+    }
+    if (len > 1 && path_in[0] == '.' && path_in[1] == '/') {
+        char tmp[PATH_MAX];
+        char *tp = &tmp[0];
+        strcpy(tmp, path_in);
+        EHANDLE("getcwd", getcwd(*abs_path_p, PATH_MAX), NULL);
+        tp++;
+        tp++;
+        strcat(*abs_path_p, "/");
+        strcat(*abs_path_p, tp);
+        dlog(1, "[ufs: build_abl_path] created abs path %s\n", *abs_path_p);
+        return 0;
+    }
+    if ((path_in[0] != '/' && path_in[0] != '.') ||
+        (path_in[0] == '.' && path_in[1] != '.' && path_in[1] != '/')) {
+        EHANDLE("getcwd", getcwd(*abs_path_p, PATH_MAX), NULL);
+        strcat(*abs_path_p, "/");
+        strcat(*abs_path_p, path_in);
+        dlog(1, "[ufs: build_abl_path] created abs path %s\n", *abs_path_p);
+        return 0;
+    }
+    if (path_in[0] == '.' && path_in[1] == 0) {
+        EHANDLE("getcwd", getcwd(*abs_path_p, PATH_MAX), NULL);
+        strcat(*abs_path_p, "/");
+        dlog(1, "[ufs: build_abs_path] created abs path %s\n", *abs_path_p);
+        return 0;
+    }
+    /* other input formats not supported */
+    return -1;
+}
+
+/** given a pointer to metainfo, stamp the corresponding stat struct time
+ ** these can be OR'ed into "type"
+ ** ST_ACS: set access time
+ ** ST_MOD: set mod time
+ ** ST_CHG: set status change time
+ **/
+int stamp(metainfo *mi, int type)
+{
+    dlog(99, "[ufs: stamp] \n");
+    if (!(type & (ST_ACS | ST_MOD | ST_CHG))) {
+        UEHANDLE("wrong type");
+    }
+
+    if (type & ST_ACS) {
+        clock_gettime(CLOCK_REALTIME_COARSE, &(mi->s.st_atim));
+    }
+    if (type & ST_MOD) {
+        clock_gettime(CLOCK_REALTIME_COARSE, &(mi->s.st_mtim));
+    }
+    if (type & ST_CHG) {
+        clock_gettime(CLOCK_REALTIME_COARSE, &(mi->s.st_ctim));
+    }
+
+    return 0;
+}
+
+/** open and map main metadata shm
+ **/
+int open_map_global_memm(void)
+{
+    int mainm_shm_size =
+        sizeof(hashinfo) * HASH_TABLE_SIZE + sizeof(filemeta) * META_BUCKETS;
+    char mainm_shm_name[50];
+    int mainm_shm_fd;
+    sprintf(mainm_shm_name, "ufs_mainm_%d", (int)uid);
+    calling_shm_open = 1;
+    mainm_shm_fd = shm_open(mainm_shm_name, O_RDWR, 0);
+    calling_shm_open = 0;
+    EHANDLE("shm_open", mainm_shm_fd, -1);
+    global_memm = mmap(NULL, mainm_shm_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       mainm_shm_fd, 0);
+    close(mainm_shm_fd);
+    dlog(5, "[ufs: open_map_global_memm] mapped main metadata shared memory\n");
+    return 0;
+}
+
+/** open and map main data shm
+ **/
+int open_map_global_memd(void)
+{
+    int maind_shm_size = sizeof(filedata) * DATA_BUCKETS_STEP;
+    char maind_shm_name[50];
+    int maind_shm_fd;
+    sprintf(maind_shm_name, "ufs_mainm_%d", (int)uid);
+    calling_shm_open = 1;
+    maind_shm_fd = shm_open(maind_shm_name, O_RDWR, 0);
+    calling_shm_open = 0;
+    EHANDLE("shm_open", maind_shm_fd, -1);
+    global_memd = mmap(NULL, maind_shm_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                       maind_shm_fd, 0);
+    close(maind_shm_fd);
+    dlog(5, "[ufs: open_map_global_memd] mapped main data shared memory\n");
+    return 0;
+}
+
+/** open and map shared memory
+ ** containing fd_back and vfork info
+ **/
+int open_map_pid_meta_mem(void)
+{
+    int pid_meta_sz = MAX_EXEC_HANGING * sizeof(pid_info);
+    char pid_meta_shm_name[50];
+    sprintf(pid_meta_shm_name, "ufs_pid_meta_%d", (int)uid);
+    int pid_meta_fd;
+    calling_shm_open = 1;
+    pid_meta_fd = shm_open(pid_meta_shm_name, O_RDWR, 0);
+    calling_shm_open = 0;
+    EHANDLE("shm_open", pid_meta_fd, -1);
+    pid_meta = mmap(NULL, pid_meta_sz, PROT_READ | PROT_WRITE, MAP_SHARED,
+                    pid_meta_fd, 0);
+    close(pid_meta_fd);
+    dlog(5, "[ufs: ufs_init] pid_meta shared memory mapped\n");
+    return 0;
+}
+
+/* init handlers and vars related to
+ * vfork signaling
+ */
+int init_vfork_signaling(void)
+{
+    this_vforked = 0;
+    this_signaled_by_parent = 0;
+    /* install signal handler used for waking parent after vfork */
+    struct sigaction sa;
+    sa.sa_handler = wake1;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGUSR1, &sa, NULL);
+    /* install signal handler used for telling child its properties ok */
+    struct sigaction sa2;
+    sa2.sa_handler = wake2;
+    sigemptyset(&sa2.sa_mask);
+    sa2.sa_flags = 0;
+    sigaction(SIGUSR2, &sa2, NULL);
+    dlog(4, "[ufs: ufs_init] signal handlers installed\n");
+    return 0;
+}
+
+/** restore fd's from shared memory backup
+ ** Keep fd_backup memory mapped and
+ ** in shared memory for easy access
+ ** by downstream exec() calls
+ **/
+int restore_fd_backup(void)
+{
+    char fd_backup_shm_name[50];
+    sprintf(fd_backup_shm_name, "ufs_fdbackup_%d_%d", (int)uid, (int)pid);
+    calling_shm_open = 1;
+    int fd_backup_fd = shm_open(fd_backup_shm_name, O_RDWR, 0);
+    calling_shm_open = 0;
+    EHANDLE("shm_open", fd_backup_fd, -1);
+    int fdtable_size = MAX_NUM_FD * sizeof(fdDescriptor);
+    void *mapret =
+        mmap(NULL, fdtable_size, PROT_READ, MAP_SHARED, fd_backup_fd, 0);
+    EHANDLE("mmap", mapret, MAP_FAILED);
+    close(fd_backup_fd);
+    fdDescriptor *backup_fds = (fdDescriptor *)mapret;
+    memcpy(fdTable, backup_fds, fdtable_size);
+    dlog(0, "[ufs: ufs_init] memcpy of fdtable ok\n");
+    return 0;
+}
+
+/** inline function **/
+void close_cloexec(void)
+{
+    int i;
+    for (i = 0; i < MAX_NUM_FD; i++) {
+        if (!(IS_FD_EMPTY(i)) && (FD_TO_FDR_FLAGS(i) & FD_CLOEXEC)) {
+            dlog(
+                1,
+                "[ufs: close_cloexec] (post_exec) closed close-on-exec fd %d\n",
+                i);
+            close(i);
+        }
+    }
+}

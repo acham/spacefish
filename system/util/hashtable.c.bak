@@ -1,0 +1,370 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+#include "hashtable.h"
+
+#include <glibccall.h>
+#include <dlfcn.h>
+#include <dlog.h>
+#include <djb2.h>
+#include <utility.h>
+#include <glibccall.h>
+#include <dlfun.h>
+
+#include <immintrin.h>
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <limits.h>
+#include <linux/limits.h>
+#include <pthread.h>
+
+unsigned long hash(unsigned char *str)
+{
+    unsigned long hash = 5381;
+    int c;
+    while ((c = *str++))
+        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+    return hash;
+}
+
+void init_hash_table(void *mem)
+{
+    hashinfo *info = (hashinfo *)mem;
+    int i;
+    for (i = 0; i < HASH_TABLE_SIZE; i++)
+        info->hashindex[i] = 0;
+    info->lastoffset = sizeof(hashinfo);
+    pthread_spin_init(&info->spinlock, 0);
+}
+
+off_t assign_hash_bucket(void *mem, size_t size)
+{
+    hashinfo *info = (hashinfo *)mem;
+    //    acquire_hash_lock(mem);
+    return __sync_fetch_and_add(&info->lastoffset, size);
+    //    release_hash_lock(mem);
+}
+
+static bucket *int_get_bucket(void *mem, off_t offset, bool ignore)
+{
+    //	printf("in int_get_bucket: %d\n", offset);
+    if (offset == 0)
+        return NULL;
+    else {
+        bucket *b = (bucket *)gotosm(mem, offset);
+        if (ignore == false)
+            return b;
+        if (b->invalid)
+            return int_get_bucket(mem, b->next, ignore);
+        else
+            return b;
+    }
+}
+
+bucket *get_bucket(void *mem, int key, bool ignore)
+{
+    hashinfo *info = (hashinfo *)mem;
+    return int_get_bucket(mem, info->hashindex[key], ignore);
+}
+
+bucket *get_next_bucket(void *mem, bucket *b, bool ignore)
+{
+    return int_get_bucket(mem, b->next, ignore);
+}
+
+bucket *init_bucket(void *mem, const char *ipath)
+{
+    dlog(5, "[ufs: init_bucket] input path: %s\n", ipath);
+    if (ipath == NULL) {
+        UEHANDLE("NULL input path");
+    }
+    int key, ret;
+    off_t offset;
+
+    hashinfo *info;
+    bucket *nb;
+
+    info = (hashinfo *)mem;
+
+    const char *path;
+    BUILD_ABS_PATH_1(path, ipath);
+
+    offset = assign_hash_bucket(mem, sizeof(bucket));
+    nb = (bucket *)gotosm(mem, offset);
+
+    ret = snprintf(nb->path, MAX_PATH_SIZE, "%s", path);
+    if (ret >= MAX_PATH_SIZE) {
+        dlog(0, "Truncated path: %s\n", nb->path);
+    }
+
+    nb->fdd.numfd = 0;
+    nb->fdd.flags = 0;
+    nb->fdd.rwptr = 0;
+    nb->fdd.frwptr.bucket_ptr = 0;
+    nb->fdd.frwptr.in_bucket_ptr = 0;
+    nb->invalid = false;
+    nb->inconsisent = false;
+    nb->self = offset;
+    nb->next = 0;
+
+    key = hash_string(path);
+
+    acquire_hash_lock(mem);
+    if (info->hashindex[key] == 0) {
+        info->hashindex[key] = offset;
+    }
+    else {
+        bucket *b = (bucket *)gotosm(mem, info->hashindex[key]);
+        while (b->next != 0) {
+            b = (bucket *)gotosm(mem, b->next);
+        }
+        b->next = offset;
+    }
+    release_hash_lock(mem);
+    dlog(1, "[ufs: init_bucket] init_bucket about to return for path %s\n, "
+            "key:%d\n",
+         ipath, key);
+    FREE_ABS_PATH_1(path, ipath);
+    return nb;
+}
+
+void *get_meta_bucket(void *mem, bucket *b)
+{
+    return gotosm(mem, b->meta.start);
+}
+
+void set_meta_bucket(void *mem, bucket *b, void *buf, size_t size)
+{
+    off_t prev_off = assign_hash_bucket(mem, size);
+
+    b->meta.start = prev_off;
+    b->meta.size = size;
+
+    memcpy(gotosm(mem, prev_off), buf, size);
+}
+
+static void int_data_bucket(void *mem, filedata *d, size_t size)
+{
+    size_t maxsize = (size > 0) ? size : DEFAULT_FILE_SIZE;
+    off_t prev_off = assign_hash_bucket(mem, maxsize);
+
+    d->start = prev_off;
+    d->size = size;
+    d->maxsize = maxsize;
+    d->next = 0;
+    memset(gotosm(mem, prev_off), 0, maxsize);
+}
+
+void init_data_bucket(void *mem, bucket *b, size_t size)
+{
+    int_data_bucket(mem, &b->data, size);
+}
+
+size_t raw_read_data_bucket(void *mem, bucket *b, off_t off, void *buf,
+                            size_t size)
+{
+    size_t n;
+    filedata *d;
+
+    n = 0;
+    d = &b->data;
+
+    while (off >= d->size) { // not in this data bucket
+        off -= d->size;
+        if (d->next != 0) {
+            d = (filedata *)gotosm(mem, d->next);
+        }
+        else {
+            return n;
+        }
+    }
+
+    while (size > 0) {
+        if (off + size <= d->size) {
+            memcpy(gotosm(buf, n), gotosm(mem, d->start + off), size);
+            n += size;
+            size = 0;
+            return n;
+        }
+        else {
+            memcpy(gotosm(buf, n), gotosm(mem, d->start + off), d->size - off);
+            n += d->size - off;
+            size -= d->size - off;
+
+            if (d->next == 0) {
+                return n;
+            }
+            else {
+                d = (filedata *)gotosm(mem, d->next);
+                off = 0;
+            }
+        }
+    }
+
+    return n;
+}
+
+void bucket_truncate(void *mem, bucket *b, off_t off)
+{
+    filedata *d = &b->data;
+    off_t prev_off;
+
+    while (off >= d->maxsize) { // not in this data bucket
+        off -= d->maxsize;
+
+        /** if jump over the whole file, update size also **/
+        d->size = d->maxsize;
+
+        if (d->next == 0) {
+            prev_off = assign_hash_bucket(mem, sizeof(filedata));
+            int_data_bucket(mem, (filedata *)gotosm(mem, prev_off), 0);
+            d->next = prev_off;
+        }
+        d = (filedata *)gotosm(mem, d->next);
+    }
+
+    d->size = off;
+
+    // all following bucket size 0
+    while (d->next != 0) {
+        d = (filedata *)gotosm(mem, d->next);
+        d->size = 0;
+    }
+}
+
+size_t raw_direct_write_data_bucket(void *mem, off_t *db, off_t *off_inout,
+                                    size_t *size_ind, const void *buf,
+                                    size_t size)
+{
+    size_t n;
+    filedata *d;
+    off_t prev_off;
+    off_t off;
+
+    n = 0;
+    *size_ind = 0;
+    d = (filedata *)gotosm(mem, *db);
+    off = *off_inout;
+
+    while (size > 0) {
+        if (off + size <= d->maxsize) {
+            memcpy(gotosm(mem, d->start + off), gotosm(buf, n), size);
+            n += size;
+            *off_inout = off + size;
+            /* size of file changes */
+            if (off + size > d->size) {
+                *size_ind += off + size - d->size;
+                d->size = off + size;
+            }
+            size = 0;
+            return n;
+        }
+        else {
+            memcpy(gotosm(mem, d->start + off), gotosm(buf, n),
+                   d->maxsize - off);
+
+            n += d->maxsize - off;
+            *size_ind += d->maxsize - d->size;
+            d->size = d->maxsize;
+            size -= d->maxsize - off;
+
+            if (d->next == 0) {
+                prev_off = assign_hash_bucket(mem, sizeof(filedata));
+                int_data_bucket(mem, (filedata *)gotosm(mem, prev_off), 0);
+                d->next = prev_off;
+            }
+            *db = d->next;
+            *off_inout = 0;
+            off = 0;
+            d = (filedata *)gotosm(mem, d->next);
+        }
+    }
+
+    return n;
+}
+
+size_t raw_write_data_bucket(void *mem, bucket *b, off_t off, size_t *size_ind,
+                             const void *buf, size_t size)
+{
+    size_t n;
+    filedata *d;
+    off_t prev_off;
+
+    n = 0;
+    d = &b->data;
+    *size_ind = 0;
+
+    while (off >= d->maxsize) { // not in this data bucket
+        off -= d->maxsize;
+
+        /** if jump over the whole file, update size also **/
+        if (d->size < d->maxsize) {
+            *size_ind += d->maxsize - d->size;
+            d->size = d->maxsize;
+        }
+
+        if (d->next == 0) {
+            prev_off = assign_hash_bucket(mem, sizeof(filedata));
+            int_data_bucket(mem, (filedata *)gotosm(mem, prev_off), 0);
+            d->next = prev_off;
+        }
+        d = (filedata *)gotosm(mem, d->next);
+    }
+
+    while (size > 0) {
+        if (off + size <= d->maxsize) {
+            memcpy(gotosm(mem, d->start + off), gotosm(buf, n), size);
+            n += size;
+            if (off + size > d->size) {
+                *size_ind += off + size - d->size;
+                d->size = off + size;
+            }
+            size = 0;
+            return n;
+        }
+        else {
+            memcpy(gotosm(mem, d->start + off), gotosm(buf, n),
+                   d->maxsize - off);
+
+            n += d->maxsize - off;
+            *size_ind += d->maxsize - d->size;
+            d->size = d->maxsize;
+            size -= d->maxsize - off;
+
+            off = 0;
+            if (d->next == 0) {
+                prev_off = assign_hash_bucket(mem, sizeof(filedata));
+                int_data_bucket(mem, (filedata *)gotosm(mem, prev_off), 0);
+                d->next = prev_off;
+            }
+            d = (filedata *)gotosm(mem, d->next);
+        }
+    }
+
+    return n;
+}
+
+void acquire_hash_lock(void *mem)
+{
+    /*    hashinfo *info  = (hashinfo *) mem;
+        while (__atomic_exchange_n(&(info->lock), 1,
+       __ATOMIC_ACQUIRE|__ATOMIC_HLE_ACQUIRE)){
+            int val;
+            do{
+                _mm_pause();
+                __atomic_load(&(info->lock), &val, __ATOMIC_CONSUME);
+            } while (val == 1);
+        }*/
+    hashinfo *info = (hashinfo *)mem;
+    pthread_spin_lock(&info->spinlock);
+}
+
+void release_hash_lock(void *mem)
+{
+    /*    hashinfo *info = (hashinfo *) mem;
+        __atomic_clear(&(info->lock), __ATOMIC_RELEASE|__ATOMIC_HLE_RELEASE);*/
+    hashinfo *info = (hashinfo *)mem;
+    pthread_spin_unlock(&info->spinlock);
+}
