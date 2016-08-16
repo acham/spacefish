@@ -56,16 +56,16 @@ This can be:
 Building
 --------
 
-1) select one bucket allocation algorithm listed above in the Makefile
-2) 
-    make
+1. select one bucket allocation algorithm listed above in the Makefile
+
+2. `make`
 
 
 Running
 -------
 
-1) run:
-        ./bin/daemon first
+1. Launch the daemon first: `./bin/daemon`
 
-2) To run an application over spacefish,
-set the LD_PRELOAD environment variable to ./bin/libufs.so.
+2. To run an application over SpaceFish (all file-related operations
+for this application will be re-directed to SpaceFish),
+set the `LD_PRELOAD` environment variable to `bin/libufs.so`.
