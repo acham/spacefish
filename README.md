@@ -17,7 +17,7 @@ are being re-directed.
 
 Main authors
 ------------
-Zhuangdi Xu
+Zhuangdi Xu;
 Alexis Champsaur
 
 Bucket allocation
