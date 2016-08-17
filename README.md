@@ -5,8 +5,7 @@ SpaceFish is an experimental userspace file system in shared memory,
 implemented from scratch, designed to run on Linux.
 It uses the `LD_PRELOAD` mechanism to intercept system call wrappers
 and other filesystem-related libc functions, in order
-to sandbox all file operations, in a scalable manner, in
-shared memory, and at the user level.
+to sandbox all file operations, in a scalable manner, at the user level.
 
 For the duration of a spacefish session, all operations related
 to files are executed on in-memory copies of the files,
