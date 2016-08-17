@@ -1,5 +1,5 @@
-SpaceFish: A Userspace File System
-==================================
+SpaceFish: A Userspace File System in Shared Memory
+===================================================
 
 SpaceFish is an experimental userspace file system in shared memory,
 implemented from scratch, designed to run on Linux.
@@ -14,6 +14,9 @@ with the actual filesystem left intact.
 The operating-system-maintained file system is not touched,
 and the OS is not even aware that its file operations
 are being re-directed.
+
+SpaceFish is specifically designed to be highly performant
+on multi-core architecture. Below are some performance numbers.
 
 Main authors
 ------------
@@ -56,7 +59,7 @@ This can be:
 Building
 --------
 
-1. select one bucket allocation algorithm listed above in the Makefile
+1. Select one bucket allocation algorithm listed above in the Makefile
 
 2. `make`
 
@@ -69,3 +72,6 @@ Running
 2. To run an application over SpaceFish (all file-related operations
 for this application will be re-directed to SpaceFish),
 set the `LD_PRELOAD` environment variable to `bin/libufs.so`.
+
+Performance
+-----------
