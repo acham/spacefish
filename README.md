@@ -59,15 +59,19 @@ This can be:
 Building
 --------
 
-1. Select one bucket allocation algorithm listed above in the Makefile
+1. Select one bucket allocation algorithm listed above in the Makefile. If unsure, use ALLOC_ALL_RANDOM.
 
-2. `make`
+2. Select a shared memory size. (TOTAL_STEPS_ALLOWED in system/include/config.h).
+
+3. `make`
 
 
 Running
 -------
 
 1. Launch the daemon first: `./bin/daemon`
+
+2. Wait for "allocated steps" message
 
 2. To run an application over SpaceFish (all file-related operations
 for this application will be re-directed to SpaceFish),

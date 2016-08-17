@@ -3,8 +3,8 @@
 /* 1 step ~= 1 GB */
 #define DATA_BUCKETS_STEP 262144
 /* ~64 GB max for data buckets */
-#define TOTAL_STEPS_ALLOWED 32
-#define MAX_DATA_BUCKETS_STEPS 128
+#define TOTAL_STEPS_ALLOWED 2
+#define MAX_DATA_BUCKETS_STEPS 2
 #define DEFAULT_FILE_SIZE 4096
 
 #include <limits.h>

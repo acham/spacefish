@@ -205,7 +205,11 @@ void init_mount(char *root)
                 init_dbucket(&db_arr[j]);
             }
         }
-        dlog(0, "[ufs-init] allocated all %d steps\n", TOTAL_STEPS_ALLOWED);
+        long unsigned tot_mem_sz = TOTAL_STEPS_ALLOWED * DATA_BUCKETS_STEP * sizeof(data_bucket);
+        dlog(-1, "[ufs-daemon] allocated all %d steps\n"
+             "[ufs-daemon] total shared mem allocated: %lu bytes\n",
+             TOTAL_STEPS_ALLOWED,
+             tot_mem_sz);
     }
     /* allocation method : 1 step at a time */
     else {
@@ -256,16 +260,6 @@ void init_mount(char *root)
 
 void cleanup(int g)
 {
-#ifdef ALLOC_ALL_ROUGH_INDEX
-    unsigned int tot_buckets_used = sys_glob_p->dbucket_rough_index;
-    dlog(0, "[ufs daemon: cleanup] total buckets used, roughly: "
-         "%u\n", tot_buckets_used);
-#endif
-#ifdef ALLOC_ALL_RANDOM
-    unsigned int tot_buckets_used = sys_glob_p->dbuckets_in_use;
-    dlog(0, "[ufs daemon: cleanup] total buckets used: %u\n",
-         tot_buckets_used);
-#endif
     int j, steps;
     steps = sys_glob_p->dbucket_steps;
     for (j = 1; j < steps; j++) {
@@ -404,7 +398,7 @@ int main(int argc, char **argv)
     }
     
     init_mount(opt.dir_name);
-    dlog(0, "[daemon] Finish mount.\n");
+    dlog(-1, "[daemon] Finish mount.\n");
     
     handle_sigaction(&sa);
 
