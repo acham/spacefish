@@ -18,7 +18,7 @@ are being re-directed.
 SpaceFish is specifically designed to be highly performant
 on multi-core architecture. Below are some performance numbers.
 
-Main authors
+Authors
 ------------
 Zhuangdi Xu;
 Alexis Champsaur
