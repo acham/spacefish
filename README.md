@@ -2,7 +2,8 @@ SpaceFish: A Userspace File System in Shared Memory
 ===================================================
 
 SpaceFish is an experimental userspace file system in shared memory,
-implemented from scratch, designed to run on Linux.
+implemented from scratch, tested successfully so far on Ubuntu and
+Fedora Linux.
 It uses the `LD_PRELOAD` mechanism to intercept system call wrappers
 and other filesystem-related libc functions, in order
 to sandbox all file operations, in a scalable manner, at the user level.
