@@ -16,7 +16,7 @@ and the OS is not even aware that its file operations
 are being re-directed.
 
 SpaceFish is specifically designed to be highly performant
-on multi-core architecture. Below are some performance numbers.
+on multi-core architecture.
 
 Authors
 ------------
@@ -77,6 +77,3 @@ Running
 for this application will be re-directed to SpaceFish),
 set the `LD_PRELOAD` environment variable to `bin/libufs.so`.
 
-Performance
------------
-[add fxmark numbers]
